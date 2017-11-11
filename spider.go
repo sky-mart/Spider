@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand"
+	"os"
 )
 
 const (
@@ -22,9 +24,9 @@ var ranks = [RankCount]string{
 }
 
 type Card struct {
-	Suit   int
-	Rank   int
-	Faceup bool
+	Suit   int  `json:"suit"`
+	Rank   int  `json:"rank"`
+	Faceup bool `json:"faceup"`
 }
 
 type SpiderState struct {
@@ -147,8 +149,37 @@ func (state *SpiderState) str() string {
 	return s
 }
 
+func check(e error) {
+	if e != nil {
+		panic(e)
+	}
+}
+
+func (state *SpiderState) writeTransparentSave(savePath string) {
+	f, err := os.Create(savePath)
+	check(err)
+	defer f.Close()
+
+	enc := json.NewEncoder(f)
+    enc.SetIndent("", "\t")
+    err = enc.Encode(state)
+    check(err)
+}
+
+func readTransparentSave(savePath string) (state *SpiderState) {
+	f, err := os.Open(savePath)
+	check(err)
+	defer f.Close()
+
+	dec := json.NewDecoder(f)
+    state = &SpiderState{}
+	err = dec.Decode(state)
+    check(err)
+    return state
+}
+
 // TODO:
-// 1) Создать репозиторий для отслеживания прогресса
+// ---1) Создать репозиторий для отслеживания прогресса
 // 2) Функции записи/чтения в файл состояния игры
 // 3) Ход. Соответствие хода правилам
 // 4) Дерево вариантов
@@ -158,4 +189,8 @@ func main() {
 
 	state := initSpiderState()
 	fmt.Print(state.str())
+
+	state.writeTransparentSave("tsave.spd")
+    state = readTransparentSave("tsave.spd")
+    fmt.Print(state.str())
 }
