@@ -34,6 +34,12 @@ type SpiderState struct {
 	Deck  []Card
 }
 
+type SpiderMove struct {
+	From      int
+	To        int
+	CardCount int
+}
+
 func (card Card) str() string {
 	if !card.Faceup {
 		return "*"
@@ -161,9 +167,9 @@ func (state *SpiderState) writeTransparentSave(savePath string) {
 	defer f.Close()
 
 	enc := json.NewEncoder(f)
-    enc.SetIndent("", "\t")
-    err = enc.Encode(state)
-    check(err)
+	enc.SetIndent("", "\t")
+	err = enc.Encode(state)
+	check(err)
 }
 
 func readTransparentSave(savePath string) (state *SpiderState) {
@@ -171,18 +177,57 @@ func readTransparentSave(savePath string) (state *SpiderState) {
 	check(err)
 	defer f.Close()
 
+	state = &SpiderState{}
 	dec := json.NewDecoder(f)
-    state = &SpiderState{}
 	err = dec.Decode(state)
-    check(err)
-    return state
+	check(err)
+	return state
+}
+
+func (state *SpiderState) isMovePossible(move *SpiderMove) bool {
+	// is it possible to take cards from
+	fromLen := len(state.Field[move.From])
+	if fromLen < move.CardCount {
+		return false
+	}
+	fromChain := state.Field[move.From][fromLen-move.CardCount:]
+	//fmt.Println(fromChain)
+	for i := move.CardCount - 1; i >= 0; i-- {
+		if fromChain[i].Faceup == false {
+			return false
+		}
+		if i > 0 {
+			sameSuit := fromChain[i].Suit == fromChain[i-1].Suit
+			incRank := fromChain[i].Rank+1 == fromChain[i-1].Rank
+			return !sameSuit || !incRank
+		}
+	}
+	// is it possible to put cards to
+	toCol := state.Field[move.To]
+	//fmt.Println(fromChain[0].Rank)
+	//fmt.Println(toCol[len(toCol)-1].Rank)
+	return fromChain[0].Rank+1 == toCol[len(toCol)-1].Rank
+}
+
+func (state *SpiderState) makeMove(move *SpiderMove) bool {
+	if state.isMovePossible(move) {
+		fromCol := state.Field[move.From]
+		toCol := state.Field[move.To]
+		fromLen := len(fromCol)
+		fromChain := fromCol[fromLen-move.CardCount:]
+		state.Field[move.From] = fromCol[:fromLen-move.CardCount]
+		state.Field[move.From][fromLen-move.CardCount-1].Faceup = true
+		state.Field[move.To] = append(toCol, fromChain...)
+	}
+	return false
 }
 
 // TODO:
 // ---1) Создать репозиторий для отслеживания прогресса
-// 2) Функции записи/чтения в файл состояния игры
-// 3) Ход. Соответствие хода правилам
-// 4) Дерево вариантов
+// ---2) Функции записи/чтения в файл состояния игры
+// ---3) Ход. Соответствие хода правилам
+// 4) История. Возврат ходов
+// 5) Дерево вариантов
 
 func main() {
 	fmt.Println("Hello, Spider!")
@@ -190,7 +235,19 @@ func main() {
 	state := initSpiderState()
 	fmt.Print(state.str())
 
-	state.writeTransparentSave("tsave.spd")
-    state = readTransparentSave("tsave.spd")
-    fmt.Print(state.str())
+	//state.writeTransparentSave("tsave.spd")
+	//state = readTransparentSave("tsave.spd")
+	//fmt.Print(state.str())
+
+	fmt.Println(state.isMovePossible(&SpiderMove{
+		From:      1,
+		To:        2,
+		CardCount: 1,
+	}))
+	fmt.Println(state.makeMove(&SpiderMove{
+		From:      0,
+		To:        2,
+		CardCount: 1,
+	}))
+	fmt.Print(state.str())
 }
