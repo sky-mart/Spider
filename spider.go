@@ -2,9 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
+	"strconv"
+	"strings"
 )
 
 const (
@@ -13,6 +16,13 @@ const (
 	DeckSize       = SuitCount * RankCount
 	SpiderDeckSize = 2 * DeckSize
 	SpiderColCount = 10
+)
+
+// Console Game FSM
+const (
+	Begin           = 0
+	WaitForSavePath = 1
+	WaitForMove     = 2
 )
 
 var suits = [SuitCount]string{
@@ -29,15 +39,16 @@ type Card struct {
 	Faceup bool `json:"faceup"`
 }
 
-type SpiderState struct {
-	Field [SpiderColCount][]Card
-	Deck  []Card
+type SpiderMove struct {
+	From      int `json:"from"`
+	To        int `json:"to"`
+	CardCount int `json:"cardcount"`
 }
 
-type SpiderMove struct {
-	From      int
-	To        int
-	CardCount int
+type SpiderState struct {
+	Field   [SpiderColCount][]Card
+	Deck    []Card
+	History []*SpiderMove
 }
 
 func (card Card) str() string {
@@ -199,7 +210,9 @@ func (state *SpiderState) isMovePossible(move *SpiderMove) bool {
 		if i > 0 {
 			sameSuit := fromChain[i].Suit == fromChain[i-1].Suit
 			incRank := fromChain[i].Rank+1 == fromChain[i-1].Rank
-			return !sameSuit || !incRank
+			if !sameSuit || !incRank {
+				return false
+			}
 		}
 	}
 	// is it possible to put cards to
@@ -209,45 +222,144 @@ func (state *SpiderState) isMovePossible(move *SpiderMove) bool {
 	return fromChain[0].Rank+1 == toCol[len(toCol)-1].Rank
 }
 
-func (state *SpiderState) makeMove(move *SpiderMove) bool {
-	if state.isMovePossible(move) {
-		fromCol := state.Field[move.From]
-		toCol := state.Field[move.To]
-		fromLen := len(fromCol)
-		fromChain := fromCol[fromLen-move.CardCount:]
-		state.Field[move.From] = fromCol[:fromLen-move.CardCount]
+func (state *SpiderState) makeMove(move *SpiderMove, fwd bool) {
+	fromCol := state.Field[move.From]
+	toCol := state.Field[move.To]
+	fromLen := len(fromCol)
+	fromChain := fromCol[fromLen-move.CardCount:]
+	state.Field[move.From] = fromCol[:fromLen-move.CardCount]
+	state.Field[move.To] = append(toCol, fromChain...)
+	if fwd {
 		state.Field[move.From][fromLen-move.CardCount-1].Faceup = true
-		state.Field[move.To] = append(toCol, fromChain...)
+	} else {
+		state.Field[move.To][len(toCol)-1].Faceup = false
+	}
+}
+
+func (state *SpiderState) doMove(move *SpiderMove) bool {
+	if state.isMovePossible(move) {
+		state.makeMove(move, true)
+		state.History = append(state.History, move)
+		return true
 	}
 	return false
+}
+
+func (state *SpiderState) undoLastMove() bool {
+	if len(state.History) == 0 {
+		return false
+	}
+	lastMove := state.History[len(state.History)-1]
+	if lastMove.CardCount == 0 {
+		for col := SpiderColCount - 1; col >= 0; col-- {
+			state.Field[col][len(state.Field[col])-1].Faceup = false
+			state.Deck = append(state.Deck,
+				state.Field[col][len(state.Field[col])-1])
+			state.Field[col] = state.Field[col][:len(state.Field[col])-1]
+		}
+	} else {
+		lastMove.From, lastMove.To = lastMove.To, lastMove.From
+		state.makeMove(lastMove, false)
+	}
+	state.History = state.History[:len(state.History)-1]
+	return true
+}
+
+func (state *SpiderState) newRow() bool {
+	if len(state.Deck) > 0 {
+		for col := 0; col < SpiderColCount; col++ {
+			state.Field[col] = append(state.Field[col],
+				state.Deck[len(state.Deck)-1-col])
+			state.Field[col][len(state.Field[col])-1].Faceup = true
+		}
+		state.Deck = state.Deck[:len(state.Deck)-SpiderColCount]
+		state.History = append(state.History,
+			&SpiderMove{CardCount: 0})
+		return true
+	}
+	return false
+}
+
+func readMove(s string) (*SpiderMove, error) {
+	move := &SpiderMove{}
+	var err error
+	ms := strings.Split(s, "-")
+	if len(ms) != 3 {
+		err = errors.New("Wrong number of arguments")
+		return move, err
+	}
+	move.From, err = strconv.Atoi(ms[0])
+	if err != nil {
+		return move, err
+	}
+	move.To, err = strconv.Atoi(ms[1])
+	if err != nil {
+		return move, err
+	}
+	move.CardCount, err = strconv.Atoi(ms[2])
+	return move, err
 }
 
 // TODO:
 // ---1) Создать репозиторий для отслеживания прогресса
 // ---2) Функции записи/чтения в файл состояния игры
 // ---3) Ход. Соответствие хода правилам
-// 4) История. Возврат ходов
-// 5) Дерево вариантов
+// ---4) История. Возврат ходов
+// ---5) Сдача карт из колоды
+// ---6) Консольная версия: считать ход, отмену хода, сдачу карт, сейв
+// 7) Дерево вариантов
 
 func main() {
-	fmt.Println("Hello, Spider!")
+	var state *SpiderState
+	var ans string
 
-	state := initSpiderState()
+	fmt.Println("Hello! This is Spider Solitaire.\nWould you like to start a new game or load an old one? (n/l):")
+
+	fmt.Scanf("%s", &ans)
+	switch ans {
+	case "n", "new":
+		fmt.Println("Starting a new game.")
+		state = initSpiderState()
+	case "l", "load":
+		fmt.Println("Loading game. Choose save: (filepath)")
+		fmt.Scanf("%s", &ans)
+		state = readTransparentSave(ans)
+	}
 	fmt.Print(state.str())
 
-	//state.writeTransparentSave("tsave.spd")
-	//state = readTransparentSave("tsave.spd")
-	//fmt.Print(state.str())
-
-	fmt.Println(state.isMovePossible(&SpiderMove{
-		From:      1,
-		To:        2,
-		CardCount: 1,
-	}))
-	fmt.Println(state.makeMove(&SpiderMove{
-		From:      0,
-		To:        2,
-		CardCount: 1,
-	}))
-	fmt.Print(state.str())
+	for {
+		fmt.Scanf("%s", &ans)
+		switch ans {
+		case "q", "quit":
+			return
+		case "s", "save":
+			fmt.Println("Saving game. Choose save: (filepath)")
+			fmt.Scanf("%s", &ans)
+			state.writeTransparentSave(ans)
+			return
+		case "r", "row":
+			if state.newRow() {
+				fmt.Print(state.str())
+			} else {
+				fmt.Println("No cards left in the deck")
+			}
+		case "u", "undo":
+			if state.undoLastMove() {
+				fmt.Print(state.str())
+			} else {
+				fmt.Println("No history")
+			}
+		default:
+			move, err := readMove(ans)
+			if err != nil {
+				fmt.Println("Wrong move format. Use <from-to-count>")
+				break
+			}
+			if state.doMove(move) {
+				fmt.Print(state.str())
+			} else {
+				fmt.Println("Impossible move")
+			}
+		}
+	}
 }
