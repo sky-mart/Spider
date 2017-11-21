@@ -18,11 +18,11 @@ const (
 	SpiderColCount = 10
 )
 
-// Console Game FSM
+type GameResult int
 const (
-	Begin           = 0
-	WaitForSavePath = 1
-	WaitForMove     = 2
+    YouLose GameResult = iota
+    YouWin
+    NoResult
 )
 
 var suits = [SuitCount]string{
@@ -34,7 +34,7 @@ var ranks = [RankCount]string{
 }
 
 type Card struct {
-	Suit   int  `json:"suit"`
+    Suit   int  `json:"suit"`
 	Rank   int  `json:"rank"`
 	Faceup bool `json:"faceup"`
 }
@@ -43,6 +43,8 @@ type SpiderMove struct {
 	From      int `json:"from"`
 	To        int `json:"to"`
 	CardCount int `json:"cardcount"`
+    Opening bool
+    SuitCleared int
 }
 
 type SpiderState struct {
@@ -158,6 +160,10 @@ func (state *SpiderState) str() string {
 				allColsFinished = false
 				s += state.Field[col][row].str() + "\t"
 			} else {
+                if row == 0 {
+                    s += "-"
+                    s += "-"
+                }
 				s += "\t"
 			}
 		}
@@ -219,30 +225,89 @@ func (state *SpiderState) isMovePossible(move *SpiderMove) bool {
 	toCol := state.Field[move.To]
 	//fmt.Println(fromChain[0].Rank)
 	//fmt.Println(toCol[len(toCol)-1].Rank)
-	return fromChain[0].Rank+1 == toCol[len(toCol)-1].Rank
+	return (len(toCol) == 0) || (fromChain[0].Rank+1 == toCol[len(toCol)-1].Rank)
 }
 
 func (state *SpiderState) makeMove(move *SpiderMove, fwd bool) {
-	fromCol := state.Field[move.From]
-	toCol := state.Field[move.To]
-	fromLen := len(fromCol)
-	fromChain := fromCol[fromLen-move.CardCount:]
-	state.Field[move.From] = fromCol[:fromLen-move.CardCount]
-	state.Field[move.To] = append(toCol, fromChain...)
 	if fwd {
-		state.Field[move.From][fromLen-move.CardCount-1].Faceup = true
+        fromCol := state.Field[move.From]
+        toCol := state.Field[move.To]
+        fromLen := len(fromCol)
+        fromChain := fromCol[fromLen-move.CardCount:]
+        state.Field[move.From] = fromCol[:fromLen-move.CardCount]
+        state.Field[move.To] = append(toCol, fromChain...)
+
+        fromCol = state.Field[move.From]
+        fromLen = len(fromCol)
+        if fromLen > 0 {
+            if fromCol[fromLen-1].Faceup == false {
+                move.Opening = true
+                fromCol[fromLen-1].Faceup = true
+            }
+        }
+
+        // clear suit chain
+        if fromChain[len(fromChain)-1].Rank != 0 {
+             return 
+        }
+        toCol = state.Field[move.To]
+        toLen := len(toCol)
+        for i := toLen - len(fromChain) - 1; i >= toLen - RankCount; i-- {
+            sameSuit := toCol[i].Suit == toCol[i+1].Suit
+            decRank := toCol[i].Rank - 1 == toCol[i+1].Rank
+            if !sameSuit || !decRank {
+                return 
+            }
+        }
+        move.SuitCleared = toCol[toLen-1].Suit
+        state.Field[move.To] = toCol[:toLen - RankCount]
 	} else {
-		state.Field[move.To][len(toCol)-1].Faceup = false
+        if move.SuitCleared != -1 {
+            chain := make([]Card, RankCount)
+            for i := 0; i < RankCount; i++ {
+                chain[i] = Card{
+                    Suit: move.SuitCleared,
+                    Rank: RankCount - 1 - i,
+                    Faceup: true,
+                }
+            }
+            state.Field[move.From] = append(state.Field[move.From], chain...)
+            move.SuitCleared = -1
+            state.makeMove(move, false)
+            return 
+        }
+        fromCol := state.Field[move.From]
+        toCol := state.Field[move.To]
+        fromLen := len(fromCol)
+        fromChain := fromCol[fromLen-move.CardCount:]
+        state.Field[move.From] = fromCol[:fromLen-move.CardCount]
+        state.Field[move.To] = append(toCol, fromChain...)
+
+        if move.Opening {
+	    	state.Field[move.To][len(toCol)-1].Faceup = false
+        }
 	}
 }
 
-func (state *SpiderState) doMove(move *SpiderMove) bool {
+func (state *SpiderState) doMove(move *SpiderMove) (bool, GameResult ) {
 	if state.isMovePossible(move) {
 		state.makeMove(move, true)
 		state.History = append(state.History, move)
-		return true
+        if move.SuitCleared != -1 {
+            for i := 0; i < SpiderColCount; i++ {
+                if len(state.Field[i]) > 0 {
+                    fmt.Printf("len != 0, %d", i)
+                    return true, NoResult
+                }
+            }
+            return true, YouWin
+        }
+        if len(state.possibleMoves()) == 0 {
+            return true, YouLose
+        }
+		return true, NoResult
 	}
-	return false
+	return false, NoResult
 }
 
 func (state *SpiderState) undoLastMove() bool {
@@ -300,6 +365,26 @@ func readMove(s string) (*SpiderMove, error) {
 	return move, err
 }
 
+func (state *SpiderState) possibleMoves() []*SpiderMove {
+    moves := []*SpiderMove{}
+    for from := 0; from < SpiderColCount; from++ {
+        for to := 0; to < SpiderColCount; to++ {
+            if to == from {
+                continue
+            }
+            for count := 1; ; count++ {
+                move := &SpiderMove{from, to, count, false, -1}
+                if state.isMovePossible(move) {
+                    moves = append(moves, move)
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    return moves
+}
+
 // TODO:
 // ---1) Создать репозиторий для отслеживания прогресса
 // ---2) Функции записи/чтения в файл состояния игры
@@ -349,14 +434,25 @@ func main() {
 			} else {
 				fmt.Println("No history")
 			}
+        case "p", "possible":
+            moves := state.possibleMoves()
+            for _, m := range moves {
+                fmt.Println(m)
+            }
 		default:
 			move, err := readMove(ans)
 			if err != nil {
 				fmt.Println("Wrong move format. Use <from-to-count>")
 				break
 			}
-			if state.doMove(move) {
-				fmt.Print(state.str())
+            ok, res := state.doMove(move)
+			if ok {
+                fmt.Print(state.str())
+                if res == YouWin {
+                    fmt.Println("You win!")
+                } else if res == YouLose {
+                    fmt.Println("You lose!")
+                }
 			} else {
 				fmt.Println("Impossible move")
 			}
